@@ -1,300 +1,385 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-SQLite кеш для результатов поиска в системе ГАРАНТ
-Сохраняет результаты поиска для избежания повторных запросов к системе ГАРАНТ
+Модуль для генерации Excel отчетов
+Excel Report Generator Module
+
+Извлеченная часть из системы идентификации ГОСТ документов
+Extracted part from GOST document identification system
 """
 
-import sqlite3
-import json
-import hashlib
-import time
-from typing import Dict, Optional, List
-from datetime import datetime, timedelta
-from pathlib import Path
 import logging
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-class GarantCache:
-    """Класс для работы с SQLite кешем результатов ГАРАНТ"""
-    
-    def __init__(self, db_path: str = "garant_cache.db", cache_ttl_hours: int = 24 * 7):
+
+class Document:
+    """Модель нормативного документа / Document model"""
+
+    def __init__(self,
+                 doc_type: str,
+                 number: str,
+                 date: Optional[datetime] = None,
+                 title: Optional[str] = None,
+                 status: str = "статус неизвестен",
+                 validation_source: Optional[str] = None,
+                 validation_date: Optional[datetime] = None,
+                 confidence: Optional[float] = None,
+                 legal_api_status: Optional[str] = None,
+                 legal_api_url: Optional[str] = None):
+        self.type = doc_type
+        self.number = number
+        self.date = date
+        self.title = title
+        self.status = status
+        self.validation_source = validation_source
+        self.validation_date = validation_date
+        self.confidence = confidence
+        self.legal_api_status = legal_api_status
+        self.legal_api_url = legal_api_url
+
+    def to_excel_row(self) -> dict:
+        """Преобразование в строку для Excel отчета / Convert to Excel row"""
+        return {
+            "Тип документа": self.type,
+            "Номер": self.number,
+            "Дата": self.date.strftime("%d.%m.%Y") if self.date else "",
+            "Название": self.title or "",
+            "Статус": self.status,
+            "Источник проверки": self.validation_source or "",
+            "Дата проверки": self.validation_date.strftime("%d.%m.%Y %H:%M") if self.validation_date else "",
+            "Уверенность": f"{self.confidence:.2f}" if self.confidence else "",
+            "Legal API статус": self.legal_api_status or "",
+            "Legal API URL": self.legal_api_url or ""
+        }
+
+
+class ExcelReportGenerator:
+    """Генератор Excel отчетов / Excel Report Generator"""
+
+    def __init__(self):
+        self.default_columns = [
+            "№ п/п",
+            "Тип документа",
+            "Номер",
+            "Дата",
+            "Название",
+            "Статус",
+            "Источник проверки",
+            "Дата проверки",
+            "Уверенность",
+            "Legal API статус",
+            "Legal API URL"
+        ]
+
+    def create_report(self, report_data: Dict[str, Any], output_path: str) -> None:
         """
-        Инициализация кеша
-        
+        Создание Excel отчета / Create Excel report
+
         Args:
-            db_path: Путь к файлу базы данных SQLite
-            cache_ttl_hours: Время жизни кеша в часах (по умолчанию 7 дней)
+            report_data: Данные для отчета / Report data
+            output_path: Путь для сохранения файла / Output file path
         """
-        self.db_path = db_path
-        self.cache_ttl_hours = cache_ttl_hours
-        self._init_database()
-    
-    def _init_database(self):
-        """Инициализация структуры базы данных"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Таблица для кеширования результатов поиска
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS garant_cache (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        query_hash TEXT UNIQUE NOT NULL,
-                        original_query TEXT NOT NULL,
-                        search_result TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        access_count INTEGER DEFAULT 1
-                    )
-                ''')
-                
-                # Индексы для улучшения производительности
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_query_hash ON garant_cache(query_hash)')
-                cursor.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON garant_cache(created_at)')
-                
-                conn.commit()
-                logger.info(f"База данных кеша ГАРАНТ инициализирована: {self.db_path}")
-                
+            documents = report_data.get('documents', [])
+
+            if not documents:
+                logger.warning("Нет документов для экспорта / No documents to export")
+                return
+
+            # Создаем DataFrame / Create DataFrame
+            rows = []
+            for i, doc in enumerate(documents, 1):
+                row = doc.to_excel_row()
+                row["№ п/п"] = i
+                rows.append(row)
+
+            df = pd.DataFrame(rows)
+
+            # Переупорядочиваем колонки / Reorder columns
+            available_columns = [col for col in self.default_columns if col in df.columns]
+            extra_columns = [col for col in df.columns if col not in self.default_columns]
+            df = df[available_columns + extra_columns]
+
+            # Создаем Excel файл с несколькими листами / Create Excel file with multiple sheets
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                # Основной лист с документами / Main sheet with documents
+                df.to_excel(writer, sheet_name='Документы', index=False)
+
+                # Лист со статистикой / Statistics sheet
+                stats_data = self._create_statistics(documents, report_data)
+                stats_df = pd.DataFrame(list(stats_data.items()), columns=['Параметр', 'Значение'])
+                stats_df.to_excel(writer, sheet_name='Статистика', index=False)
+
+                # Лист с результатами поиска Legal API / Legal API search results sheet
+                if any(doc.legal_api_status for doc in documents):
+                    legal_api_data = self._create_legal_api_summary(documents)
+                    legal_api_df = pd.DataFrame(legal_api_data)
+                    legal_api_df.to_excel(writer, sheet_name='Legal API Results', index=False)
+
+                # Форматирование основного листа / Format main sheet
+                worksheet = writer.sheets['Документы']
+                self._format_worksheet(worksheet, df)
+
+            logger.info(f"Excel отчет создан / Excel report created: {output_path}")
+
         except Exception as e:
-            logger.error(f"Ошибка при инициализации базы данных: {e}")
+            logger.error(f"Ошибка при создании Excel отчета / Error creating Excel report: {str(e)}")
             raise
-    
-    def _get_query_hash(self, query: str) -> str:
+
+    def create_search_report(self, search_results: List[Dict], search_query: str, output_path: str) -> None:
         """
-        Создание хеша для запроса
-        
+        Создание отчета по результатам поиска / Create search results report
+
         Args:
-            query: Поисковый запрос
-            
-        Returns:
-            MD5 хеш запроса
-        """
-        # Нормализуем запрос для создания стабильного хеша
-        normalized_query = query.strip().lower()
-        return hashlib.md5(normalized_query.encode('utf-8')).hexdigest()
-    
-    def get_cached_result(self, query: str) -> Optional[Dict]:
-        """
-        Получение результата из кеша
-        
-        Args:
-            query: Поисковый запрос
-            
-        Returns:
-            Кешированный результат или None если не найден/устарел
-        """
-        query_hash = self._get_query_hash(query)
-        
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Получаем результат из кеша
-                cursor.execute('''
-                    SELECT search_result, created_at, access_count 
-                    FROM garant_cache 
-                    WHERE query_hash = ?
-                ''', (query_hash,))
-                
-                row = cursor.fetchone()
-                if not row:
-                    return None
-                
-                search_result_json, created_at_str, access_count = row
-                
-                # Проверяем не устарел ли кеш
-                created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00') if 'Z' in created_at_str else created_at_str)
-                
-                # Убираем timezone info для сравнения
-                if created_at.tzinfo:
-                    created_at = created_at.replace(tzinfo=None)
-                
-                expiry_time = created_at + timedelta(hours=self.cache_ttl_hours)
-                
-                if datetime.now() > expiry_time:
-                    # Кеш устарел, удаляем запись
-                    cursor.execute('DELETE FROM garant_cache WHERE query_hash = ?', (query_hash,))
-                    conn.commit()
-                    logger.info(f"Удален устаревший кеш для запроса: {query[:50]}...")
-                    return None
-                
-                # Обновляем статистику доступа
-                cursor.execute('''
-                    UPDATE garant_cache 
-                    SET accessed_at = CURRENT_TIMESTAMP, access_count = access_count + 1 
-                    WHERE query_hash = ?
-                ''', (query_hash,))
-                conn.commit()
-                
-                # Парсим результат из JSON
-                result = json.loads(search_result_json)
-                logger.info(f"Найден кешированный результат для запроса: {query[:50]}... (использований: {access_count + 1})")
-                return result
-                
-        except Exception as e:
-            logger.error(f"Ошибка при получении из кеша: {e}")
-            return None
-    
-    def save_result(self, query: str, result: Dict):
-        """
-        Сохранение результата в кеш
-        
-        Args:
-            query: Поисковый запрос
-            result: Результат поиска для сохранения
-        """
-        query_hash = self._get_query_hash(query)
-        
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Сериализуем результат в JSON
-                result_json = json.dumps(result, ensure_ascii=False, indent=2)
-                
-                # Используем REPLACE для обновления существующих записей
-                cursor.execute('''
-                    INSERT OR REPLACE INTO garant_cache 
-                    (query_hash, original_query, search_result, created_at, accessed_at, access_count)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
-                ''', (query_hash, query, result_json))
-                
-                conn.commit()
-                logger.info(f"Сохранен результат в кеш для запроса: {query[:50]}...")
-                
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении в кеш: {e}")
-    
-    def clean_expired_cache(self):
-        """Очистка устаревших записей из кеша"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Удаляем записи старше чем cache_ttl_hours
-                expiry_timestamp = datetime.now() - timedelta(hours=self.cache_ttl_hours)
-                
-                cursor.execute('''
-                    DELETE FROM garant_cache 
-                    WHERE created_at < ?
-                ''', (expiry_timestamp.isoformat(),))
-                
-                deleted_count = cursor.rowcount
-                conn.commit()
-                
-                if deleted_count > 0:
-                    logger.info(f"Удалено {deleted_count} устаревших записей из кеша")
-                    
-        except Exception as e:
-            logger.error(f"Ошибка при очистке кеша: {e}")
-    
-    def get_cache_stats(self) -> Dict:
-        """
-        Получение статистики кеша
-        
-        Returns:
-            Словарь со статистикой кеша
+            search_results: Результаты поиска / Search results
+            search_query: Поисковый запрос / Search query
+            output_path: Путь для сохранения / Output path
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Общее количество записей
-                cursor.execute('SELECT COUNT(*) FROM garant_cache')
-                total_records = cursor.fetchone()[0]
-                
-                # Размер базы данных
-                db_size = Path(self.db_path).stat().st_size if Path(self.db_path).exists() else 0
-                
-                # Самые популярные запросы
-                cursor.execute('''
-                    SELECT original_query, access_count, created_at 
-                    FROM garant_cache 
-                    ORDER BY access_count DESC 
-                    LIMIT 5
-                ''')
-                popular_queries = cursor.fetchall()
-                
-                # Записи за последние 24 часа
-                yesterday = datetime.now() - timedelta(hours=24)
-                cursor.execute('''
-                    SELECT COUNT(*) FROM garant_cache 
-                    WHERE created_at > ?
-                ''', (yesterday.isoformat(),))
-                recent_records = cursor.fetchone()[0]
-                
-                return {
-                    "total_records": total_records,
-                    "db_size_bytes": db_size,
-                    "db_size_mb": round(db_size / (1024 * 1024), 2),
-                    "recent_records_24h": recent_records,
-                    "popular_queries": [
-                        {
-                            "query": query[:100] + "..." if len(query) > 100 else query,
-                            "access_count": count,
-                            "created_at": created_at
-                        }
-                        for query, count, created_at in popular_queries
-                    ],
-                    "cache_ttl_hours": self.cache_ttl_hours
-                }
-                
+            # Преобразуем результаты поиска в документы
+            documents = []
+            for i, result in enumerate(search_results):
+                doc = Document(
+                    doc_type=result.get('type', 'Неизвестно'),
+                    number=result.get('number', f'doc_{i}'),
+                    date=result.get('date'),
+                    title=result.get('title', ''),
+                    status=result.get('status', 'Неизвестно'),
+                    validation_source=result.get('source', ''),
+                    validation_date=datetime.now(),
+                    confidence=result.get('confidence', 0.0),
+                    legal_api_status=result.get('legal_api_status'),
+                    legal_api_url=result.get('legal_api_url')
+                )
+                documents.append(doc)
+
+            # Создаем данные отчета
+            report_data = {
+                'documents': documents,
+                'search_query': search_query,
+                'search_date': datetime.now(),
+                'total_results': len(search_results),
+                'extraction_method': 'Legal Documents API Search',
+                'processing_time': 0.0
+            }
+
+            self.create_report(report_data, output_path)
+
         except Exception as e:
-            logger.error(f"Ошибка при получении статистики кеша: {e}")
-            return {}
-    
-    def clear_all_cache(self):
-        """Полная очистка кеша"""
+            logger.error(f"Ошибка при создании отчета поиска: {e}")
+            raise
+
+    def _create_statistics(self, documents: List[Document], report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Создание статистики для отчета / Create report statistics"""
+
+        total_docs = len(documents)
+
+        # Статистика по типам документов / Document type statistics
+        type_stats = {}
+        for doc in documents:
+            type_stats[doc.type] = type_stats.get(doc.type, 0) + 1
+
+        # Статистика по статусам / Status statistics
+        status_stats = {}
+        for doc in documents:
+            status_stats[doc.status] = status_stats.get(doc.status, 0) + 1
+
+        # Статистика по Legal API
+        legal_api_stats = {}
+        for doc in documents:
+            if doc.legal_api_status:
+                legal_api_stats[doc.legal_api_status] = legal_api_stats.get(doc.legal_api_status, 0) + 1
+
+        # Средняя уверенность / Average confidence
+        confidences = [doc.confidence for doc in documents if doc.confidence is not None]
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
+        stats = {
+            'Дата создания отчета': datetime.now().strftime('%d.%m.%Y %H:%M'),
+            'Исходный файл': report_data.get('source_file', 'Не указан'),
+            'Поисковый запрос': report_data.get('search_query', 'Не указан'),
+            'Метод извлечения': report_data.get('extraction_method', 'Не указан'),
+            'Время обработки (сек)': f"{report_data.get('processing_time', 0):.2f}",
+            'Всего документов': total_docs,
+            'Средняя уверенность': f"{avg_confidence:.2f}" if avg_confidence > 0 else "Не определена"
+        }
+
+        # Добавляем статистику по типам / Add type statistics
+        for doc_type, count in type_stats.items():
+            stats[f'Количество: {doc_type}'] = count
+
+        # Добавляем статистику по статусам / Add status statistics
+        for status, count in status_stats.items():
+            stats[f'Статус: {status}'] = count
+
+        # Добавляем статистику по Legal API
+        for api_status, count in legal_api_stats.items():
+            stats[f'Legal API: {api_status}'] = count
+
+        # Добавляем метаданные текста если есть / Add text metadata if available
+        text_metadata = report_data.get('text_metadata', {})
+        if text_metadata:
+            stats['Параграфов в документе'] = text_metadata.get('total_paragraphs', 0)
+            stats['Таблиц в документе'] = text_metadata.get('total_tables', 0)
+            stats['Размер файла (байт)'] = text_metadata.get('file_size', 0)
+
+        return stats
+
+    def _create_legal_api_summary(self, documents: List[Document]) -> List[Dict]:
+        """Создание сводки по результатам Legal API"""
+        summary = []
+
+        for doc in documents:
+            if doc.legal_api_status:
+                summary.append({
+                    'Документ': f"{doc.type} {doc.number}",
+                    'Название': doc.title or '',
+                    'Legal API статус': doc.legal_api_status,
+                    'Базовый статус': doc.status,
+                    'Совпадение статусов': 'Да' if doc.legal_api_status.lower() in doc.status.lower() else 'Нет',
+                    'URL': doc.legal_api_url or ''
+                })
+
+        return summary
+
+    def _format_worksheet(self, worksheet, df: pd.DataFrame) -> None:
+        """Форматирование Excel листа / Format Excel worksheet"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM garant_cache')
-                conn.commit()
-                logger.info("Кеш полностью очищен")
-                
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
+
+            # Заголовки / Headers
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            center_alignment = Alignment(horizontal="center", vertical="center")
+
+            # Применяем стили к заголовкам / Apply styles to headers
+            for col_num, column in enumerate(df.columns, 1):
+                cell = worksheet.cell(row=1, column=col_num)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_alignment
+
+            # Автоширина колонок / Auto-width columns
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = get_column_letter(column[0].column)
+
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+
+                adjusted_width = min(max_length + 2, 50)  # Максимум 50 символов / Max 50 characters
+                worksheet.column_dimensions[column_letter].width = adjusted_width
+
+            # Заморозка первой строки / Freeze first row
+            worksheet.freeze_panes = "A2"
+
+        except ImportError:
+            logger.warning(
+                "openpyxl не поддерживает расширенное форматирование / openpyxl doesn't support advanced formatting")
         except Exception as e:
-            logger.error(f"Ошибка при очистке кеша: {e}")
-    
-    def export_cache_to_json(self, output_path: str) -> bool:
-        """
-        Экспорт кеша в JSON файл
-        
-        Args:
-            output_path: Путь для сохранения JSON файла
-            
-        Returns:
-            True если экспорт успешен, False иначе
-        """
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT original_query, search_result, created_at, accessed_at, access_count
-                    FROM garant_cache
-                    ORDER BY created_at DESC
-                ''')
-                
-                rows = cursor.fetchall()
-                
-                export_data = []
-                for row in rows:
-                    query, result_json, created_at, accessed_at, access_count = row
-                    export_data.append({
-                        "query": query,
-                        "result": json.loads(result_json),
-                        "created_at": created_at,
-                        "accessed_at": accessed_at,
-                        "access_count": access_count
-                    })
-                
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    json.dump(export_data, f, ensure_ascii=False, indent=2)
-                
-                logger.info(f"Кеш экспортирован в файл: {output_path}")
-                return True
-                
-        except Exception as e:
-            logger.error(f"Ошибка при экспорте кеша: {e}")
-            return False 
+            logger.warning(f"Ошибка при форматировании листа / Error formatting worksheet: {str(e)}")
+
+
+def create_sample_report():
+    """Пример создания отчета / Example of creating a report"""
+
+    # Создаем тестовые документы / Create sample documents
+    documents = [
+        Document(
+            doc_type="ГОСТ",
+            number="Р 7.0.5-2008",
+            date=datetime(2008, 12, 15),
+            title="Система стандартов по информации, библиотечному и издательскому делу. Библиографическая ссылка. Общие требования и правила составления",
+            status="действует",
+            validation_source="Росстандарт",
+            validation_date=datetime.now(),
+            confidence=0.95,
+            legal_api_status="действующий",
+            legal_api_url="https://gostexpert.ru/gost/7.0.5-2008"
+        ),
+        Document(
+            doc_type="Приказ",
+            number="1234",
+            date=datetime(2023, 5, 20),
+            title="О внесении изменений в технические регламенты",
+            status="действует",
+            validation_source="Минпромторг",
+            validation_date=datetime.now(),
+            confidence=0.87,
+            legal_api_status="действующий",
+            legal_api_url="https://pravo.gov.ru/document/1234"
+        ),
+        Document(
+            doc_type="ГОСТ",
+            number="15150-69",
+            date=datetime(1969, 1, 1),
+            title="Машины, приборы и другие технические изделия. Исполнения для различных климатических районов",
+            status="действует",
+            validation_source="Росстандарт",
+            validation_date=datetime.now(),
+            confidence=0.92,
+            legal_api_status="действующий",
+            legal_api_url="https://gostexpert.ru/gost/15150-69"
+        )
+    ]
+
+    # Данные отчета / Report data
+    report_data = {
+        'documents': documents,
+        'extraction_method': 'Legal Documents API + AI + Regex',
+        'processing_time': 2.5,
+        'source_file': 'sample_document.docx',
+        'search_query': 'ГОСТ стандарты',
+        'text_metadata': {
+            'total_paragraphs': 150,
+            'total_tables': 3,
+            'file_size': 1024000
+        }
+    }
+
+    # Создаем отчет / Create report
+    generator = ExcelReportGenerator()
+    output_path = "legal_documents_search_report.xlsx"
+    generator.create_report(report_data, output_path)
+
+    print(f"✅ Отчет создан / Report created: {output_path}")
+    return output_path
+
+
+def create_search_results_report(search_results: List[Dict], query: str, output_path: str = None) -> str:
+    """
+    Создание отчета по результатам поиска правовых документов
+    Create report from legal documents search results
+
+    Args:
+        search_results: Результаты поиска
+        query: Поисковый запрос
+        output_path: Путь для сохранения (опционально)
+
+    Returns:
+        Путь к созданному файлу
+    """
+    if not output_path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = f"search_results_{timestamp}.xlsx"
+
+    generator = ExcelReportGenerator()
+    generator.create_search_report(search_results, query, output_path)
+
+    return output_path
+
+
+if __name__ == "__main__":
+    # Настройка логирования / Setup logging
+    logging.basicConfig(level=logging.INFO)
+
+    # Создаем пример отчета / Create sample report
+    create_sample_report() 
