@@ -16,6 +16,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 try:
     from selenium_stealth import stealth
+
     STEALTH_AVAILABLE = True
 except ImportError:
     STEALTH_AVAILABLE = False
@@ -23,6 +24,7 @@ except ImportError:
 
 try:
     import undetected_chromedriver as uc
+
     UC_AVAILABLE = True
 except ImportError:
     UC_AVAILABLE = False
@@ -30,10 +32,11 @@ except ImportError:
 
 from references_extractor import Reference
 
+
 class StealthGarantChecker:
     """Проверка документов через систему ГАРАНТ с расширенными возможностями обхода детекции"""
-    
-    def __init__(self, headless: bool = False, use_stealth: bool = True, use_proxies: bool = False, 
+
+    def __init__(self, headless: bool = False, use_stealth: bool = True, use_proxies: bool = False,
                  proxy_list: List[str] = None, use_undetected_chrome: bool = False):
         self.headless = headless
         self.use_stealth = use_stealth and STEALTH_AVAILABLE
@@ -42,17 +45,17 @@ class StealthGarantChecker:
         self.proxy_list = proxy_list or []
         self.driver = None
         self.current_proxy = None
-        
+
         # Пул User-Agent строк для ротации
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         ]
-        
+
         # Различные разрешения экрана
         self.screen_sizes = [
-            (1920, 1080), (1366, 768), (1536, 864), (1440, 900), 
+            (1920, 1080), (1366, 768), (1536, 864), (1440, 900),
             (1280, 720), (1600, 900), (2560, 1440), (1920, 1200)
         ]
 
@@ -62,47 +65,47 @@ class StealthGarantChecker:
             return self._setup_undetected_chrome()
         else:
             return self._setup_regular_chrome_with_stealth()
-    
+
     def _setup_undetected_chrome(self):
         """Настройка Undetected Chrome"""
         options = uc.ChromeOptions()
-        
+
         if self.headless:
             options.add_argument("--headless=new")
-        
+
         width, height = random.choice(self.screen_sizes)
         options.add_argument(f"--window-size={width},{height}")
-        
+
         if self.use_proxies and self.proxy_list:
             proxy = random.choice(self.proxy_list)
             options.add_argument(f"--proxy-server={proxy}")
             self.current_proxy = proxy
-                
+
         options.add_argument("--no-first-run")
         options.add_argument("--no-service-autorun")
         options.add_argument("--disable-default-apps")
-        
+
         driver = uc.Chrome(options=options, version_main=None)
         return driver
-    
+
     def _setup_regular_chrome_with_stealth(self):
         """Настройка обычного Chrome с максимальными настройками стелс"""
         chrome_options = Options()
-        
+
         if self.headless:
             chrome_options.add_argument("--headless=new")
-            
+
         width, height = random.choice(self.screen_sizes)
         chrome_options.add_argument(f"--window-size={width},{height}")
-        
+
         user_agent = random.choice(self.user_agents)
         chrome_options.add_argument(f"--user-agent={user_agent}")
-        
+
         if self.use_proxies and self.proxy_list:
             proxy = random.choice(self.proxy_list)
             chrome_options.add_argument(f"--proxy-server={proxy}")
             self.current_proxy = proxy
-        
+
         # Основные настройки анти-детекции
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
@@ -110,7 +113,7 @@ class StealthGarantChecker:
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
-        
+
         # Дополнительные настройки стелс
         chrome_options.add_argument("--disable-plugins-discovery")
         chrome_options.add_argument("--disable-extensions")
@@ -121,7 +124,7 @@ class StealthGarantChecker:
         chrome_options.add_argument("--disable-web-security")
         chrome_options.add_argument("--disable-features=TranslateUI")
         chrome_options.add_argument("--disable-features=VizDisplayCompositor")
-        
+
         # Настройки профиля браузера
         prefs = {
             "profile.default_content_setting_values.notifications": 2,
@@ -133,7 +136,7 @@ class StealthGarantChecker:
             "credentials_enable_service": False,
         }
         chrome_options.add_experimental_option("prefs", prefs)
-        
+
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         return driver
@@ -150,17 +153,17 @@ class StealthGarantChecker:
                     renderer="Intel Iris OpenGL Engine",
                     fix_hairline=True,
                     run_on_insecure_origins=True
-            )
-        
+                    )
+
         # Дополнительные скрипты для обхода детекции
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
+
         driver.execute_script("""
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [1, 2, 3, 4, 5],
             });
         """)
-        
+
         driver.execute_script("""
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['ru-RU', 'ru', 'en-US', 'en'],
@@ -171,10 +174,10 @@ class StealthGarantChecker:
         """Симулирует человеческое поведение"""
         if not self.driver:
             return
-            
+
         # Случайная пауза
         time.sleep(random.uniform(0.5, 2.0))
-        
+
         # Случайные движения мыши
         try:
             actions = ActionChains(self.driver)
@@ -186,7 +189,7 @@ class StealthGarantChecker:
                 time.sleep(random.uniform(0.1, 0.5))
         except Exception:
             pass
-            
+
         # Случайная прокрутка
         try:
             scroll_amount = random.randint(100, 500)
@@ -202,21 +205,21 @@ class StealthGarantChecker:
             # Настройка драйвера
             self.driver = self._setup_stealth_chrome()
             self._apply_stealth_techniques(self.driver)
-            
+
             # Симулируем человеческое поведение
             self._simulate_human_behavior()
-            
+
             # Формируем запрос
             query = self._format_query(ref)
             print(f"🔍 ГАРАНТ поиск (стелс): {query[:100]}...")
-            
+
             # Переходим на сайт
             encoded_query = urllib.parse.quote(query)
             search_url = f"https://ivo.garant.ru/#/basesearch/{encoded_query}/all:0"
-            
+
             self.driver.get(search_url)
             time.sleep(random.uniform(3.0, 5.0))
-            
+
             # Проверяем блокировку
             if self._check_if_blocked():
                 return {
@@ -225,24 +228,24 @@ class StealthGarantChecker:
                     "url": search_url,
                     "запрос": query
                 }
-            
+
             # Ищем результаты
             wait = WebDriverWait(self.driver, 20)
-            
+
             try:
                 result_xpath = '/html/body/div[1]/div[2]/div[2]/div[2]/div[2]/div/div/div/div[2]/div/div/div[2]/div/div/div[4]/div/div/ul[1]/li[1]/a'
                 wait.until(EC.presence_of_element_located((By.XPATH, result_xpath)))
-                
+
                 # Человекоподобный клик
                 result_link = wait.until(EC.element_to_be_clickable((By.XPATH, result_xpath)))
                 self._human_like_click(result_link)
-                
+
                 time.sleep(random.uniform(3.0, 5.0))
-                
+
                 # Анализируем результат
                 page_source = self.driver.page_source.lower()
                 status = self._analyze_document_status(page_source)
-                
+
                 return {
                     "источник": "ГАРАНТ",
                     "статус": status,
@@ -250,7 +253,7 @@ class StealthGarantChecker:
                     "запрос": query,
                     "метод": "stealth_check"
                 }
-                
+
             except TimeoutException:
                 return {
                     "источник": "ГАРАНТ",
@@ -258,7 +261,7 @@ class StealthGarantChecker:
                     "url": search_url,
                     "запрос": query
                 }
-                
+
         except Exception as e:
             return {
                 "источник": "ГАРАНТ",
@@ -275,28 +278,28 @@ class StealthGarantChecker:
         """Форматирование запроса для поиска"""
         if ref.raw and len(ref.raw.strip()) > 10:
             return ref.raw.strip()[:200]
-        
+
         query_parts = []
-        
+
         if hasattr(ref, 'type') and ref.type:
             query_parts.append(ref.type)
-        
+
         if ref.number:
             query_parts.append(f"№ {ref.number}")
-            
+
         if ref.date:
             query_parts.append(f"от {ref.date}")
-            
+
         if ref.title and not ref.number:
             query_parts.append(ref.title[:100])
-            
+
         result = " ".join(query_parts)
-        
+
         if not result and ref.number:
             result = ref.number
         elif not result and ref.title:
             result = ref.title[:100]
-            
+
         return result or "документ"
 
     def _human_like_click(self, element):
@@ -304,18 +307,18 @@ class StealthGarantChecker:
         try:
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
             time.sleep(random.uniform(0.3, 0.8))
-            
+
             actions = ActionChains(self.driver)
             actions.move_to_element(element)
-            
+
             x_offset = random.randint(-3, 3)
             y_offset = random.randint(-3, 3)
             actions.move_by_offset(x_offset, y_offset)
-            
+
             time.sleep(random.uniform(0.1, 0.4))
             actions.click()
             actions.perform()
-            
+
         except Exception:
             element.click()
 
@@ -323,14 +326,14 @@ class StealthGarantChecker:
         """Проверяет блокировку"""
         try:
             page_source = self.driver.page_source.lower()
-            
+
             block_indicators = [
                 "cloudflare", "access denied", "blocked", "captcha",
                 "please verify", "robot", "bot detection", "security check"
             ]
-            
+
             return any(indicator in page_source for indicator in block_indicators)
-            
+
         except Exception:
             return False
 
@@ -338,7 +341,7 @@ class StealthGarantChecker:
         """Анализ статуса документа"""
         if "информация по данному запросу отсутствует в вашем комплекте" in page_source:
             return "нет_информации"
-        
+
         if any(phrase in page_source for phrase in ["не действует", "утратил силу", "отменен"]):
             return "не_действует"
         elif any(phrase in page_source for phrase in ["действует", "в силе", "актуален"]):
