@@ -1,19 +1,15 @@
 import asyncio
 import re
 from typing import List, Dict, Tuple, Optional
-import logging
 
 import httpx
 from bs4 import BeautifulSoup
 import urllib.parse
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 # Импортируем улучшенный стелс-чекер ГАРАНТ
 try:
     from garant_checker import GarantCheckerParallel, enhance_validation_with_garant
+
     GARANT_AVAILABLE = True
 except ImportError:
     GARANT_AVAILABLE = False
@@ -56,19 +52,10 @@ HEADERS = {
 
 async def _fetch(client: httpx.AsyncClient, url: str) -> Tuple[str, str]:
     try:
-        logger.info(f"Checking source: {url}")
-        resp = await client.get(url, timeout=10.0)  # Reduced timeout
+        resp = await client.get(url, timeout=20)
         resp.raise_for_status()
-        logger.info(f"Successfully checked {url}")
         return url, resp.text.lower()
-    except httpx.TimeoutException:
-        logger.warning(f"Timeout while checking {url}")
-        return url, ""
-    except httpx.HTTPStatusError as e:
-        logger.warning(f"HTTP error {e.response.status_code} while checking {url}")
-        return url, ""
-    except Exception as e:
-        logger.warning(f"Error checking {url}: {str(e)}")
+    except Exception:
         return url, ""
 
 
@@ -92,27 +79,13 @@ async def validate_reference(ref_raw: str, max_sources: int | None = None) -> Di
     tasks = []
     query = urllib.parse.quote_plus(ref_raw)
 
-    # Add connection and rate limiting
-    limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
-    async with httpx.AsyncClient(
-        headers=HEADERS, 
-        follow_redirects=True,
-        limits=limits,
-        timeout=10.0  # Global timeout
-    ) as client:
-        logger.info(f"Starting validation for: {ref_raw}")
+    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
         for i, (name, tmpl) in enumerate(SOURCES.items()):
             if max_sources and i >= max_sources:
                 break
             url = tmpl.format(query=query)
             tasks.append(_fetch(client, url))
-        
-        # Use timeout for gather to prevent infinite waiting
-        try:
-            results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=30.0)
-        except asyncio.TimeoutError:
-            logger.error("Timeout while gathering results from all sources")
-            results = [(url, "") for url in SOURCES.values()]
+        results = await asyncio.gather(*tasks)
 
     status_counts = {"expired": 0, "active": 0, "unknown": 0}
     source_status: Dict[str, str] = {}
@@ -179,12 +152,12 @@ async def bulk_validate(refs: List[str]) -> Dict[str, Dict]:
 async def bulk_validate_enhanced(refs: List, use_garant: bool = True, progress_callback=None) -> Dict[str, Dict]:
     """
     Расширенная валидация с поддержкой проверки через ГАРАНТ
-    
+
     Args:
         refs: Список объектов Reference или строк
         use_garant: Использовать ли проверку через ГАРАНТ
         progress_callback: Callback функция для отображения прогресса
-        
+
     Returns:
         Словарь с результатами валидации
     """
@@ -195,26 +168,26 @@ async def bulk_validate_enhanced(refs: List, use_garant: bool = True, progress_c
             ref_strings.append(ref.raw)
         else:
             ref_strings.append(str(ref))
-    
+
     if progress_callback:
         progress_callback("🔍 Выполняется базовая проверка через стандартные источники...")
-    
+
     validation_results = await bulk_validate(ref_strings)
-    
+
     # Показываем промежуточные результаты
     unknown_count = sum(
-        1 for result in validation_results.values() 
+        1 for result in validation_results.values()
         if result.get("статус", "").lower() == "неизвестно"
     )
-    
+
     if progress_callback:
         progress_callback(f"📊 Базовая проверка завершена. Неизвестных статусов: {unknown_count}")
-    
+
     # Если много неизвестных статусов и доступен ГАРАНТ - используем его
     if use_garant and GARANT_AVAILABLE and unknown_count > 10:
         if progress_callback:
             progress_callback(f"🎯 Запускается дополнительная проверка через ГАРАНТ для {unknown_count} документов...")
-        
+
         # Преобразуем строки обратно в Reference объекты для ГАРАНТ
         ref_objects = []
         if hasattr(refs[0], 'raw'):  # Если уже Reference объекты
@@ -226,22 +199,23 @@ async def bulk_validate_enhanced(refs: List, use_garant: bool = True, progress_c
                 Reference(raw=ref_str, type="Документ", number=None, date=None, title=None)
                 for ref_str in ref_strings
             ]
-        
+
         # Используем интегрированную функцию с параллельной обработкой (5 Chrome инстансов)
         validation_results = enhance_validation_with_garant(ref_objects, validation_results)
-        
+
         # Показываем финальную статистику
         final_unknown_count = sum(
-            1 for result in validation_results.values() 
+            1 for result in validation_results.values()
             if result.get("статус", "").lower() == "неизвестно"
         )
-        
+
         improved_count = unknown_count - final_unknown_count
         if progress_callback:
-            progress_callback(f"✅ Параллельная проверка через ГАРАНТ (5 Chrome инстансов) улучшила статус для {improved_count} документов")
-        
+            progress_callback(
+                f"✅ Параллельная проверка через ГАРАНТ (5 Chrome инстансов) улучшила статус для {improved_count} документов")
+
     elif use_garant and unknown_count > 10 and not GARANT_AVAILABLE:
         if progress_callback:
             progress_callback("⚠️  Нужна проверка через ГАРАНТ, но модуль недоступен")
-        
+
     return validation_results 
